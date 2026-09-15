@@ -147,7 +147,7 @@ def adaptive_CI_finite_var(
         radius = float("inf")
     else:
         finite_variance_term = math.sqrt((1 - phatminus) / phatminus)
-        sampling_term = math.sqrt(2 / (values.size * phatn * alpha))
+        sampling_term = math.sqrt(2 / (values.size * phatn * phatminus * alpha))
         radius = sigma_max * (finite_variance_term + sampling_term)
 
     return _interval(center - radius, center + radius)
@@ -163,6 +163,7 @@ def adaptive_CI_subG(
     """
     _validate_alpha(alpha)
     values = _as_observation_array(observations)
+    phatn = _observed_fraction(values)
     phatminus = phat_minus(values, alpha)
     center = compute_sample_mean(values)
 
@@ -172,16 +173,43 @@ def adaptive_CI_subG(
         radius = 0.0
     else:
         r_sg_1 = math.sqrt(math.log(4) * math.log(1 / phatminus))
-        r_sg_2 = 1.5 * (1 - phatminus) / phatminus
+        r_sg_2 = 2.2 * (1 - phatminus) / phatminus
         r_sg_2 *= math.sqrt(math.log(2 / (1 - phatminus)))
-        radius = sigma_max * min(r_sg_1, r_sg_2)
+        sampling_term = 4 * math.sqrt(math.log(4) * math.log(2/phatminus) * math.log(4 / alpha) / (values.size * phatn))
+        radius = sigma_max * min(r_sg_1, r_sg_2) + sigma_max * sampling_term
 
     return _interval(center - radius, center + radius)
 
-
-def adaptive_TS(observations: Iterable[object], alpha: float) -> Interval:
+def adaptive_CI_bounded(
+    observations: Iterable[object],
+    alpha: float,
+    a: float,
+    b: float,
+) -> Interval:
     """
-    Construct the Tukey-Scheffe interval for symmetric distributions.
+    Compute an adaptive confidence interval under a sub-Gaussian assumption.
+    """
+    _validate_alpha(alpha)
+    values = _as_observation_array(observations)
+    phatn = _observed_fraction(values)
+    phatminus = phat_minus(values, alpha)
+    sample_mean = compute_sample_mean(values)
+
+    if phatminus == 0:
+        radius = float("inf")
+    elif phatminus >= 1:
+        radius = 0.0
+    else:
+        sampling_term = (b-a) * math.sqrt(math.log(4/alpha) / (2 * values.size * phatn))
+        Delta_L = (1-phatminus) * a - sampling_term
+        Delta_R = (1-phatminus) * b + sampling_term
+        center = phatminus * sample_mean
+    return _interval(center - Delta_L, center + Delta_R)
+
+
+def adaptive_CI_sym(observations: Iterable[object], alpha: float) -> Interval:
+    """
+    Construct the adaptive confidence interval for symmetric distributions.
     """
     _validate_alpha(alpha)
     values = _as_observation_array(observations)
@@ -195,36 +223,40 @@ def adaptive_TS(observations: Iterable[object], alpha: float) -> Interval:
 def compute_CI_Gaussian(
     observations: Iterable[object],
     t: float,
-    alpha: float,
-    scale: float = 100,
+    lambda_1: float,
+    lambda_2: float,
+    beta: float,
+    sigma_bar: float = 100,
 ) -> Interval:
     """
-    Compute the Gaussian adaptive confidence interval for a fixed ``t``.
+    Compute the Gaussian Scheffe--Tukey interval.
     """
-    _validate_alpha(alpha)
+    _validate_alpha(beta)
     values = _as_observation_array(observations)
-    quantile_level = 1 - scipy.stats.norm.cdf(t)
-    quantile_level += math.sqrt(math.log(4 / alpha) / (2 * values.size))
-    left_endpoint = _upper_empirical_quantile_saturated(values, quantile_level) - scale * t
-    right_endpoint = _lower_empirical_quantile_saturated(values, quantile_level) + scale * t
+    quantile_level = lambda_1 * (1 - scipy.stats.norm.cdf(t))
+    quantile_level += math.sqrt(lambda_2 * math.log(4 / beta) / (2 * values.size))
+    left_endpoint = _upper_empirical_quantile_saturated(values, quantile_level) - sigma_bar * t
+    right_endpoint = _lower_empirical_quantile_saturated(values, quantile_level) + sigma_bar * t
     return _interval(left_endpoint, right_endpoint)
 
 
 def adaptive_CI_Gaussian(
     observations: Iterable[object],
-    alpha: float,
-    scale: float = 100,
+    lambda_1: float,
+    lambda_2: float,
+    beta: float,
+    sigma_bar: float = 100,
 ) -> Interval:
     """
-    Choose ``t`` by minimizing the Gaussian adaptive interval length.
+    Choose ``t`` by minimizing the Gaussian Scheffe--Tukey interval length.
     """
 
     def compute_length(t: float) -> float:
-        candidate = compute_CI_Gaussian(observations, t, alpha, scale)
+        candidate = compute_CI_Gaussian(observations, t, lambda_1, lambda_2, beta, sigma_bar)
         return candidate["right"] - candidate["left"]
 
-    result = scipy.optimize.minimize_scalar(compute_length)
-    return compute_CI_Gaussian(observations, result.x, alpha, scale)
+    result = scipy.optimize.minimize_scalar(compute_length, bounds=(0, 100), method="bounded",)
+    return compute_CI_Gaussian(observations, result.x, lambda_1, lambda_2, beta, sigma_bar)
 
 
 __all__ = [
@@ -232,7 +264,7 @@ __all__ = [
     "adaptive_CI_Gaussian",
     "adaptive_CI_finite_var",
     "adaptive_CI_subG",
-    "adaptive_TS",
+    "adaptive_CI_Sym",
     "compute_CI_Gaussian",
     "compute_sample_mean",
     "max_min_avg",
